@@ -162,6 +162,23 @@ if ricerca:
         df.loc[mancanti, "artista"] = split[0]
         df.loc[mancanti, "titolo"] = split[1] if split.shape[1] > 1 else "-"
 
+    # Più artisti possono avere un brano con lo stesso titolo (es. "Paparazzi"
+    # di Cremonini e di Lady Gaga). La ricerca gira su "ARTISTA - TITOLO", quindi
+    # li pesca entrambi: qui si isola quello che interessa.
+    conteggi = df["artista"].fillna("—").value_counts()
+    etichette = {f"{a} ({n})": a for a, n in conteggi.items()}
+
+    if len(etichette) > 1:
+        scelti = st.multiselect(
+            f"Trovati {len(etichette)} artisti — lascia vuoto per vederli tutti",
+            options=list(etichette.keys()),
+        )
+        if scelti:
+            df = df[df["artista"].isin([etichette[e] for e in scelti])]
+            if df.empty:
+                st.warning("Nessun passaggio per gli artisti selezionati.")
+                st.stop()
+
     a, b, c = st.columns(3)
     a.metric("Passaggi totali", len(df))
     b.metric("Emittenti", df["radio"].nunique())
