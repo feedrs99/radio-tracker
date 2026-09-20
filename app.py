@@ -100,7 +100,7 @@ semaforo()
 
 col1, col2 = st.columns([2, 3])
 with col1:
-    ricerca = st.text_input("Artista o brano", placeholder="es. Ultimo, Alba, Marracash")
+    ricerca = st.text_input("Artista o brano", placeholder="es. Cesare Cremonini")
 with col2:
     oggi = datetime.now().date()
     periodo = st.date_input(
