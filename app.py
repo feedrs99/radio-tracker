@@ -7,6 +7,8 @@ una ricerca sui giorni scorsi non restituiva nulla anche a database pieno.
 """
 
 import os
+import re
+import unicodedata
 from datetime import datetime, timedelta, time as dtime
 
 import pandas as pd
@@ -42,6 +44,52 @@ if str(SUPABASE_KEY).startswith("sb_secret_"):
     st.error("Questa è la chiave SEGRETA e non va messa in un'app web. "
              "Sostituiscila con la chiave pubblica (sb_publishable_...).")
     st.stop()
+
+# --- Normalizzazione dei nomi ---------------------------------------------
+# Ogni emittente scrive gli artisti a modo suo: "Cesare Cremonini",
+# "CESARE CREMONINI", e qualcuna attacca il titolo al nome
+# ("Paparazzi LADY GAGA"). Senza normalizzare, lo stesso artista compare
+# più volte nel filtro e i conteggi si spezzano.
+
+_COLLAB = re.compile(r"[,&/]|\bfeat\.?\b|\bft\.?\b|\bcon\b|\bwith\b|\bvs\.?\b", re.I)
+
+
+def _chiave(s):
+    """Confronto insensibile a maiuscole, accenti, punteggiatura e spazi."""
+    s = unicodedata.normalize("NFKD", str(s))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^0-9A-Za-z\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip().upper()
+
+
+def normalizza_artisti(serie):
+    """Restituisce per ogni riga il nome canonico, cioè la grafia più usata."""
+    orig = serie.fillna("—").astype(str)
+    chiavi = orig.map(_chiave)
+    gruppi = {k: k for k in chiavi.unique()}
+
+    # I featuring restano distinti: "MARRACASH, GUÈ" non è "GUÈ".
+    collab = {k for k, o in zip(chiavi, orig) if _COLLAB.search(o)}
+
+    # Un nome che ne contiene un altro per intero viene assorbito:
+    # "PAPARAZZI LADY GAGA" -> "LADY GAGA".
+    atomiche = sorted([k for k in gruppi if k and k not in collab], key=len)
+    for corta in atomiche:
+        if gruppi.get(corta) != corta:
+            continue
+        for lunga in list(gruppi):
+            if lunga == corta or lunga in collab or gruppi[lunga] != lunga:
+                continue
+            if len(lunga) > len(corta) and re.search(rf"\b{re.escape(corta)}\b", lunga):
+                gruppi[lunga] = corta
+
+    finale = chiavi.map(lambda k: gruppi.get(k, k))
+    etichetta = (
+        pd.DataFrame({"g": finale, "o": orig})
+        .groupby("g")["o"].agg(lambda s: s.value_counts().idxmax())
+    )
+    return finale.map(etichetta)
+
 
 @st.cache_data(ttl=60)
 def stato_raccolta():
@@ -162,10 +210,13 @@ if ricerca:
         df.loc[mancanti, "artista"] = split[0]
         df.loc[mancanti, "titolo"] = split[1] if split.shape[1] > 1 else "-"
 
+    # Nomi unificati: le varianti di grafia diventano un artista solo.
+    df["artista"] = normalizza_artisti(df["artista"])
+
     # Più artisti possono avere un brano con lo stesso titolo (es. "Paparazzi"
-    # di Cremonini e di Lady Gaga). La ricerca gira su "ARTISTA - TITOLO", quindi
-    # li pesca entrambi: qui si isola quello che interessa.
-    conteggi = df["artista"].fillna("—").value_counts()
+    # di Cremonini e di Lady Gaga). La ricerca gira su "ARTISTA - TITOLO",
+    # quindi li pesca entrambi: qui si isola quello che interessa.
+    conteggi = df["artista"].value_counts()
     etichette = {f"{a} ({n})": a for a, n in conteggi.items()}
 
     if len(etichette) > 1:
@@ -182,7 +233,9 @@ if ricerca:
     a, b, c = st.columns(3)
     a.metric("Passaggi totali", len(df))
     b.metric("Emittenti", df["radio"].nunique())
-    c.metric("Brani distinti", df["titolo"].nunique())
+    # anche i titoli vanno confrontati normalizzati, altrimenti "Paparazzi"
+    # e "PAPARAZZI" contano come due brani diversi
+    c.metric("Brani distinti", df["titolo"].map(_chiave).nunique())
 
     st.subheader("Passaggi per emittente")
     st.bar_chart(df["radio"].value_counts())
