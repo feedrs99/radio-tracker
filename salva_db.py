@@ -1,45 +1,54 @@
 """
-Raccolta continua v2 — girato da GitHub Actions ogni 10 minuti.
+Raccolta continua — girata da GitHub Actions ogni 10 minuti.
 
-Differenze rispetto alla v1:
-  - non fa più il parsing a regex della homepage (che sbagliava ad associare
-    il nome della radio alla canzone della riga successiva)
-  - interroga la playlist di ogni emittente con lo stesso endpoint dello
-    storico, quindi salva l'orario REALE di messa in onda e l'id univoco
-  - se un run salta (GitHub Actions non è puntuale), il run dopo recupera
-    comunque le prime 3 pagine = ~13 ore di rotazione
+Legge le prime pagine della playlist di ogni emittente e salva le righe nuove.
+3 pagine = ~135 passaggi a testa = oltre 12 ore di rotazione: cosi' anche se
+il cron di GitHub salta qualche giro non si perde niente.
+
+Serve la chiave SEGRETA in SUPABASE_KEY.
 """
 
+import concurrent.futures as cf
+
 from radio_core import (
-    RADIOS, sessione, leggi_hash, scarica_pagina, estrai,
-    invia_a_supabase, pausa,
+    RADIOS, sessione, scarica_pagina, estrai,
+    invia_a_supabase, pausa, ChiaveRifiutata,
 )
 
-PAGINE = 3   # 3 x 45 = 135 passaggi per radio, copre eventuali run saltati
+PAGINE = 3
+
+
+def raccogli(radio):
+    nome, slug = radio
+    s = sessione()
+    raccolti = 0
+
+    for pagina in range(1, PAGINE + 1):
+        try:
+            righe = estrai(scarica_pagina(s, slug, "", "", pagina), nome)
+            if not righe:
+                break
+            raccolti += invia_a_supabase(righe)
+            pausa(0.4)
+        except ChiaveRifiutata:
+            raise
+        except Exception as e:
+            print(f"[{nome}] p{pagina}: {e}")
+            break
+
+    print(f"[{nome}] {raccolti} passaggi inviati")
+    return raccolti
 
 
 def main():
-    s = sessione()
-    for nome, slug in RADIOS:
-        try:
-            h = leggi_hash(s, slug)
-        except Exception as e:
-            print(f"[{nome}] saltata: {e}")
-            continue
+    try:
+        with cf.ThreadPoolExecutor(max_workers=4) as ex:
+            totali = list(ex.map(raccogli, RADIOS))
+    except ChiaveRifiutata as e:
+        # esce con errore: cosi' il run su GitHub diventa rosso e te ne accorgi
+        raise SystemExit(f"Supabase rifiuta la chiave: {e}")
 
-        raccolti = 0
-        for pagina in range(1, PAGINE + 1):
-            try:
-                righe = estrai(scarica_pagina(s, slug, h, "", "", pagina), nome)
-                if not righe:
-                    break
-                raccolti += invia_a_supabase(righe)
-                pausa()
-            except Exception as e:
-                print(f"[{nome}] p{pagina}: {e}")
-                break
-
-        print(f"[{nome}] {raccolti} passaggi inviati")
+    print(f"\nTotale inviato: {sum(totali)} righe su {len(RADIOS)} emittenti")
 
 
 if __name__ == "__main__":
