@@ -1,0 +1,28 @@
+name: Keepalive
+
+# GitHub disattiva i workflow schedulati dopo 60 giorni senza attività nel
+# repository. Questo commit automatico mensile tiene il repo "attivo" e
+# impedisce che la raccolta ogni 10 minuti si spenga da sola.
+
+on:
+  schedule:
+    - cron: '0 3 1 * *'   # il primo di ogni mese alle 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Aggiorna il file di battito
+        run: |
+          date -u +"ultimo keepalive: %Y-%m-%d %H:%M UTC" > .keepalive
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .keepalive
+          git commit -m "chore: keepalive" || exit 0
+          git push
